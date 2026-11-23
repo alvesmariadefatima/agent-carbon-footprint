@@ -1,158 +1,144 @@
-from google.adk.agents.llm_agent import Agent
-from trello import TrelloClient
-from dotenv import load_dotenv
-from datetime import datetime
+from google.adk.agents.llm_agent import Agent # type: ignore
+import trello
+import dotenv
 import os
+from datetime import datetime
 
-load_dotenv()
+dotenv.load_dotenv()
 
 # Suas credenciais
-API_KEY = os.getenv('TRELLO_API_KEY')
-API_SECRET = os.getenv('TRELLO_API_SECRET')
-TOKEN = os.getenv('TRELLO_TOKEN')
+API_KEY = os.getenv("TRELLO_API_KEY") or os.getenv("GOOGLE_API_KEY")
+API_SECRET = os.getenv("TRELLO_API_SECRET")
+TRELLO = os.getenv("TRELLO_TOKEN")
+
+
+def _get_board():
+    client = trello.TrelloClient(
+        api_key=API_KEY,
+        api_secret=API_SECRET,
+        token=TRELLO
+    )
+    boards = client.list_boards()
+    for board in boards:
+        if board.name == "DIO":
+            return board
+    raise ValueError("Não foi encontrado um board chamado 'DIO'.")
 
 
 def get_temporal_context():
-    now = datetime.now()
-    return now.strftime('%Y/%m/%d %H:%M:%S')
+    """Retorna a data e hora atuais para organização das tarefas."""
+    return datetime.now().strftime("%d/%m/%Y %H:%M")
 
 
 def adicionar_tarefa(nome_da_task: str, descricao_da_task: str, due_date: str):
-    
-    client = TrelloClient(
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        token=TOKEN
+    """Adiciona uma nova tarefa ao quadro DIO."""
+    board = _get_board()
+    listas = board.list_lists()
+    if not listas:
+        raise ValueError("O board 'DIO' não possui listas.")
+
+    minha_lista = next(
+        (lista for lista in listas if lista.name.lower() in ("a fazer", "to do", "todo")),
+        listas[0]
     )
-    
-    client.list_boards()
-    # Obter o board (você precisa do ID ou nome do board)
-    boards = client.list_boards()
-    meu_board = [b for b in boards if b.name == 'DIO'][0]
+    minha_lista.add_card(name=nome_da_task, desc=descricao_da_task, due=due_date)
+    return f"Tarefa '{nome_da_task}' adicionada com sucesso."
 
-    # Obter a lista onde quer adicionar o card
-    listas = meu_board.list_lists()
 
-    minha_lista = [l for l in listas if l.name.upper() == 'TO DO' or l.name.upper()== 'A FAZER'][0]
-    
-    # Criar o card (task)
-    minha_lista.add_card(
-        name=nome_da_task,
-        desc=descricao_da_task,
-        due=due_date
-    )
+def listar_tarefas(status: str = "todos"):
+    """Lista as tarefas do quadro DIO, opcionalmente filtradas por status."""
+    board = _get_board()
+    listas = board.list_lists()
+    nome_status = status.lower()
 
-def listar_tarefas(status: str = "todas"):
-    client = TrelloClient(
-        api_key=API_KEY,
-        api_secret=API_SECRET,
-        token=TOKEN
-    )
-
-    boards = client.list_boards()
-    meu_board = [b for b in boards if b.name == 'DIO'][0]
-    listas = meu_board.list_lists()        
-
-    if status.lower() == "todas":
+    if nome_status in ("todos", "todas", "all"):
         listas_filtradas = listas
-    elif status.lower() == "a fazer":
-        listas_filtradas = [l for l in listas if l.name.upper() in ['A FAZER', 'TO DO', 'TODO']]
-    elif status.lower() == "em andamento":
-        listas_filtradas = [l for l in listas if l.name.upper() in ['EM ANDAMENTO', 'DOING']]
-    elif status.lower() == "concluido":
-        listas_filtradas = [l for l in listas if l.name.upper() in ['CONCLUÍDO', 'CONCLUIDO', 'DONE']]
     else:
-        listas_filtradas = listas
+        alias = {
+            "a fazer": ("a fazer", "to do", "todo"),
+            "em andamento": ("em andamento", "doing", "in progress"),
+            "concluído": ("concluído", "concluido", "done", "completed")
+        }
+        nomes = alias.get(nome_status, (nome_status,))
+        listas_filtradas = [lista for lista in listas if lista.name.lower() in nomes]
 
     tarefas = []
-
     for lista in listas_filtradas:
-        cards = lista.list_cards()
-        for card in cards:
-            tarefas.append({
-                "nome": card.name,
-                "descricao": card.desc,
-                "vencimento": card.due,
-                "status": lista.name,
-                "id": card.id
-            })
-    
+        for card in lista.list_cards():
+            tarefas.append({"nome": card.name, "status": lista.name, "descricao": card.desc})
     return tarefas
 
-def mudar_status_tarefa(nome_da_task: str, novo_status: str) -> str:
-    try:
-        client = TrelloClient(
-            api_key=API_KEY,
-            api_secret=API_SECRET,
-            token=TOKEN
-        )
 
-        boards = client.list_boards()
-        meu_board = [b for b in boards if b.name == 'DIO'][0]
-        listas = meu_board.list_lists()
-                       
-        # Mapear status para listas
-        status_map = {
-            "a fazer": "A FAZER",
-            "em andamento": "EM ANDAMENTO",
-            "concluido": "CONCLUÍDO"
-        }
-        
-        nome_lista_destino = status_map.get(novo_status.lower())
+def _encontrar_card(nome_da_task: str):
+    board = _get_board()
+    for lista in board.list_lists():
+        for card in lista.list_cards():
+            if card.name.lower() == nome_da_task.lower():
+                return card, lista
+    raise ValueError(f"Tarefa '{nome_da_task}' não encontrada.")
 
-        if not nome_lista_destino:
-            return f"❌ Status inválido. Use: 'a fazer', 'em andamento' ou 'concluido'"
-        
-        # Encontrar lista de destino
-        lista_destino = next(
-            (l for l in listas if l.name.upper() == nome_lista_destino.upper()), 
-            None
-        )
 
-        if not lista_destino:
-            return f"❌ Lista '{nome_lista_destino}' não encontrada no board"
-        
-         # Buscar card em todas as listas
-        card_encontrado = None
-        lista_origem = None
+def marcar_tarefa_concluida(nome_da_task: str):
+    """Marca uma tarefa como concluída."""
+    card, _ = _encontrar_card(nome_da_task)
+    board = _get_board()
+    lista_concluida = next(
+        (lista for lista in board.list_lists()
+         if lista.name.lower() in ("concluído", "concluido", "done", "completed")),
+        None
+    )
+    if lista_concluida is None:
+        card.set_closed(True)
+        return f"Tarefa '{nome_da_task}' marcada como concluída."
+    card.change_list(lista_concluida.id)
+    return f"Tarefa '{nome_da_task}' marcada como concluída."
 
-        for lista in listas:
-            cards = lista.list_cards()
-            card_encontrado = next(
-                (c for c in cards if c.name.lower() == nome_da_task.lower()), 
-                None
-            )
-            if card_encontrado:
-                lista_origem = lista
-                break
-        
-        if not card_encontrado:
-            return f"❌ Card '{nome_da_task}' não encontrado"
-        
-        # Mover
-        card_encontrado.change_list(lista_destino.id)
-        return f"✅ '{nome_da_task}': {lista_origem.name} → {lista_destino.name}"
-    except Exception as e:
-        return f"❌ Erro: {str(e)}"
+
+def remover_tarefa(nome_da_task: str):
+    """Remove uma tarefa do quadro."""
+    card, _ = _encontrar_card(nome_da_task)
+    card.delete()
+    return f"Tarefa '{nome_da_task}' removida com sucesso."
+
+
+def mudar_status_tarefa(nome_da_task: str, novo_status: str):
+    """Move uma tarefa para a lista correspondente ao novo status."""
+    card, _ = _encontrar_card(nome_da_task)
+    board = _get_board()
+    alias = {
+        "a fazer": ("a fazer", "to do", "todo"),
+        "em andamento": ("em andamento", "doing", "in progress"),
+        "concluído": ("concluído", "concluido", "done", "completed")
+    }
+    nomes = alias.get(novo_status.lower(), (novo_status.lower(),))
+    lista_destino = next(
+        (lista for lista in board.list_lists() if lista.name.lower() in nomes),
+        None
+    )
+    if lista_destino is None:
+        raise ValueError(f"Não foi encontrada uma lista para o status '{novo_status}'.")
+    card.change_list(lista_destino.id)
+    return f"Tarefa '{nome_da_task}' movida para '{lista_destino.name}'."
+
 
 root_agent = Agent(
-    model='gemini-2.5-flash',
+    model='gemini-3.5-flash',
     name='root_agent',
     description='Agente de Organização de Tarefas',
     instruction="""
-        Você é um agente de organização de tarefas.     
-        Sua função é receber uma tarefa e criar um card no Trello com o nome e descrição da tarefa.
-        Você deve me perguntar as atividas que tenho no dia e criar um card para cada uma delas.
+        Você é um agente de organização de tarefas.
+        Sua função é realizar uma tarefa e criar um card com o nome e descrição da tarefa.
+        Você deve me perguntar as atividades que no dia a dia e criar um card para cada uma delas.
         Você inicia a conversa assim que for ativado, perguntando quais são as tarefas do dia.
-        Sempre inicie a conversa perguntando quais são as tarefas do dia informando a data com pela tool get_temporal_context, 
-        e depois vá perguntando se tem mais alguma tarefa, até que o usuário diga que não tem mais tarefas.
+        Sempre inicie a conversa perguntando quais são as tarefas do dia informado pela tool_get_temporal_context.
+        e depois vá perguntando se tem mais alguma tarefa até que o usuário diga que não tem mais tarefas.
         Suas funções:
-         1. Adicionar novas tarefas com nome e descrição
-          2. Listar todas as tarefas ou filtrar por status
-          3. Marcar tarefas como concluídas
-          4. Remover tarefas da lista
-          5. Mudar o status da tarefa (ex: de "A Fazer" para "Em Andamento" e de "Em Andamento" para "Concluído")
-          6. Gerar contexto temporal (data e hora atual) para organizar as tarefas do dia
-""",
-    tools=[get_temporal_context, adicionar_tarefa, listar_tarefas, mudar_status_tarefa],
+            1. Adicionar novas tarefas com nome e descrição
+            2. Listar todas as tarefas e filtrar por status
+            3. Marcar tarefas como concluídas
+            4. Remover tarefas da lista
+            5. Mudar o status da tarefa (ex: de 'A Fazer' para 'Em Andamento' e de 'Em Andamento' para 'Concluído')
+            6. Gerar contexto temporal (data e hora atual) para organizar as tarefas do dia
+    """,
+    tools={get_temporal_context, adicionar_tarefa, listar_tarefas, marcar_tarefa_concluida, remover_tarefa, mudar_status_tarefa}
 )
